@@ -1,7 +1,13 @@
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Web.Http;
+using System.Xml;
 using WebActivatorEx;
 using WebApi;
 using Swashbuckle.Application;
+using Swashbuckle.Swagger;
 
 [assembly: PreApplicationStartMethod(typeof(SwaggerConfig), "Register")]
 
@@ -46,7 +52,7 @@ namespace WebApi
                         //        vc.Version("v2", "Swashbuckle Dummy API V2");
                         //        vc.Version("v1", "Swashbuckle Dummy API V1");
                         //    });
-
+                 
                         // You can use "BasicAuth", "ApiKey" or "OAuth2" options to describe security schemes for the API.
                         // See https://github.com/swagger-api/swagger-spec/blob/master/versions/2.0.md for more details.
                         // NOTE: These only define the schemes and need to be coupled with a corresponding "security" property
@@ -57,7 +63,7 @@ namespace WebApi
                         //c.BasicAuth("basic")
                         //    .Description("Basic HTTP Authentication");
                         //
-						// NOTE: You must also configure 'EnableApiKeySupport' below in the SwaggerUI section
+                        // NOTE: You must also configure 'EnableApiKeySupport' below in the SwaggerUI section
                         //c.ApiKey("apiKey")
                         //    .Description("API Key Authentication")
                         //    .Name("apiKey")
@@ -97,7 +103,7 @@ namespace WebApi
                         // those comments into the generated docs and UI. You can enable this by providing the path to one or
                         // more Xml comment files.
                         //
-                        //c.IncludeXmlComments(GetXmlCommentsPath());
+                       c.IncludeXmlComments(GetXmlCommentsPath());
 
                         // Swashbuckle makes a best attempt at generating Swagger compliant JSON schemas for the various types
                         // exposed in your API. However, there may be occasions when more control of the output is needed.
@@ -166,15 +172,16 @@ namespace WebApi
                         // with the same path (sans query string) and HTTP method. You can workaround this by providing a
                         // custom strategy to pick a winner or merge the descriptions for the purposes of the Swagger docs 
                         //
-                        //c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+                         c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
 
                         // Wrap the default SwaggerGenerator with additional behavior (e.g. caching) or provide an
                         // alternative implementation for ISwaggerProvider with the CustomProvider option.
                         //
-                        //c.CustomProvider((defaultProvider) => new CachingSwaggerProvider(defaultProvider));
+                        c.CustomProvider((defaultProvider) => new CachingSwaggerProvider(defaultProvider));
                     })
                 .EnableSwaggerUi(c =>
                     {
+                        c.InjectJavaScript(thisAssembly, "WebApi.Scripts.swaggerui.swagger_lang.js");
                         // Use the "InjectStylesheet" option to enrich the UI with one or more additional CSS stylesheets.
                         // The file must be included in your project as an "Embedded Resource", and then the resource's
                         // "Logical Name" is passed to the method as shown below.
@@ -245,8 +252,77 @@ namespace WebApi
         }
         private static string GetXmlCommentsPath()
         {
-            return System.String.Format(@"{0}/App_Data/SqlSugar.WebApi.XML", System.AppDomain.CurrentDomain.BaseDirectory);
+            return System.String.Format(@"{0}/bin/WebApi.XML", System.AppDomain.CurrentDomain.BaseDirectory);
         }
 
+        public class CachingSwaggerProvider : ISwaggerProvider
+        {
+            private static ConcurrentDictionary<string, SwaggerDocument> _cache =
+                new ConcurrentDictionary<string, SwaggerDocument>();
+
+            private readonly ISwaggerProvider _swaggerProvider;
+
+            public CachingSwaggerProvider(ISwaggerProvider swaggerProvider)
+            {
+                _swaggerProvider = swaggerProvider;
+            }
+
+            public SwaggerDocument GetSwagger(string rootUrl, string apiVersion)
+            {
+                var cacheKey = string.Format("{0}_{1}", rootUrl, apiVersion);
+                SwaggerDocument srcDoc = null;
+                //只读取一次
+                if (!_cache.TryGetValue(cacheKey, out srcDoc))
+                {
+                    srcDoc = _swaggerProvider.GetSwagger(rootUrl, apiVersion);
+
+                    srcDoc.vendorExtensions = new Dictionary<string, object> { { "ControllerDesc", GetControllerDesc() } };
+                    _cache.TryAdd(cacheKey, srcDoc);
+                }
+                return srcDoc;
+            }
+
+            /// <summary>
+            /// 从API文档中读取控制器描述
+            /// </summary>
+            /// <returns>所有控制器描述</returns>
+            public static ConcurrentDictionary<string, string> GetControllerDesc()
+            {
+                string xmlpath = string.Format("{0}/bin/WebApi.XML", System.AppDomain.CurrentDomain.BaseDirectory);
+                ConcurrentDictionary<string, string> controllerDescDict = new ConcurrentDictionary<string, string>();
+                if (File.Exists(xmlpath))
+                {
+                    XmlDocument xmldoc = new XmlDocument();
+                    xmldoc.Load(xmlpath);
+                    string type = string.Empty, path = string.Empty, controllerName = string.Empty;
+
+                    string[] arrPath;
+                    int length = -1, cCount = "Controller".Length;
+                    XmlNode summaryNode = null;
+                    foreach (XmlNode node in xmldoc.SelectNodes("//member"))
+                    {
+                        type = node.Attributes["name"].Value;
+                        if (type.StartsWith("T:"))
+                        {
+                            //控制器
+                            arrPath = type.Split('.');
+                            length = arrPath.Length;
+                            controllerName = arrPath[length - 1];
+                            if (controllerName.EndsWith("Controller"))
+                            {
+                                //获取控制器注释
+                                summaryNode = node.SelectSingleNode("summary");
+                                string key = controllerName.Remove(controllerName.Length - cCount, cCount);
+                                if (summaryNode != null && !string.IsNullOrEmpty(summaryNode.InnerText) && !controllerDescDict.ContainsKey(key))
+                                {
+                                    controllerDescDict.TryAdd(key, summaryNode.InnerText.Trim());
+                                }
+                            }
+                        }
+                    }
+                }
+                return controllerDescDict;
+            }
+        }
     }
 }

@@ -35,5 +35,11 @@ namespace WebApi.Controllers
         public void Delete(int id)
         {
         }
+        [HttpPost]
+        public string GetName(int id)
+        {
+            return "liuyi";
+        }
+       
     }
 }
